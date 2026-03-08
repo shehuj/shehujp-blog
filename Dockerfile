@@ -14,7 +14,8 @@
 #   docker pull ghost:6-alpine
 #   docker inspect ghost:6-alpine --format '{{index .RepoDigests 0}}'
 # ---------------------------------------------------------------
-FROM ghost:6-alpine
+# FROM ghost:6-alpine
+FROM ghost:6.14-alpine
 
 # OCI-standard image labels for auditing and registries
 LABEL org.opencontainers.image.title="atechbroe-blog" \
