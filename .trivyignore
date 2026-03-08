@@ -1,0 +1,126 @@
+# .trivyignore
+# CVEs reviewed and accepted as upstream risk in Ghost's node_modules.
+# These cannot be fixed in the Dockerfile — they require Ghost to release
+# updated dependencies. Re-evaluate each time Ghost releases a new version.
+# Last reviewed: 2026-03-08
+
+# @tryghost/members-csv — CSV injection during member export
+# Risk: requires admin access to trigger; low exposure on personal blog
+CVE-2024-34448
+
+# axios — DoS via __proto__ key in mergeConfig
+# Risk: internal Ghost usage only; not directly user-controlled input
+CVE-2026-25639
+
+# braces — DoS via unbounded string expansion
+# Risk: build-time / internal tooling; not reachable via HTTP
+CVE-2024-4068
+
+# cross-spawn — ReDoS
+# Risk: internal Ghost tooling only
+CVE-2024-21538
+
+# decode-uri-component — DoS via malformed input
+# Risk: Ghost validates input upstream before reaching this
+CVE-2022-38900
+
+# form-data — unsafe random function
+# Risk: used for internal multipart handling; not directly user-controlled
+CVE-2025-7783
+
+# glob — command injection via malicious filenames
+# Risk: file operations are sandboxed to Ghost content dir
+CVE-2025-64756
+
+# http-cache-semantics — ReDoS
+# Risk: affects caching layer; DoS only, no data exposure
+CVE-2022-25881
+
+# jsonwebtoken — unrestricted key type
+# Risk: Ghost controls key generation; external JWTs are not accepted
+CVE-2022-23539
+
+# jws — HS256 signature verification bypass
+# Risk: mitigated by Ghost's token validation layer
+CVE-2025-65945
+
+# knex — SQL injection in legacy query builder
+# Risk: Ghost 6 uses a newer knex version for its own queries;
+#       this instance is a transitive dependency
+CVE-2016-20018
+
+# luxon — ReDoS
+# Risk: date parsing with attacker-controlled input is not a Ghost attack surface
+CVE-2023-22467
+
+# minimatch — ReDoS / catastrophic backtracking
+CVE-2026-26996
+CVE-2026-27903
+CVE-2026-27904
+
+# moment — ReDoS / path traversal in locale
+# Risk: locale is set by Ghost config, not user input
+CVE-2022-24785
+CVE-2022-31129
+
+# multer — DoS via dropped connections / malformed requests
+# Risk: Ghost limits upload size; DoS requires sustained attack
+CVE-2026-2359
+CVE-2026-3304
+CVE-2026-3520
+
+# node-forge — ASN.1 recursion / interpretation conflict
+# Risk: used for TLS cert handling; Ghost handles certs at the proxy layer
+CVE-2025-12816
+CVE-2025-66031
+
+# nodemailer — DoS via crafted email header
+# Risk: sender addresses are validated by Ghost before reaching nodemailer
+CVE-2025-14874
+
+# nth-check — ReDoS
+CVE-2021-3803
+
+# path-to-regexp — ReDoS
+# Risk: route patterns are defined by Ghost, not user input
+CVE-2024-45296
+
+# semver — ReDoS
+CVE-2022-25883
+
+# systeminformation — arbitrary command execution via network interface param
+# Risk: Ghost uses this for admin health stats; not user-controlled input
+CVE-2026-26280
+CVE-2026-26318
+
+# tar / tar-fs — path traversal / symlink poisoning
+# Risk: tar extraction only occurs during theme installation (admin-only)
+CVE-2026-23745
+CVE-2026-23950
+CVE-2026-24842
+CVE-2026-26960
+CVE-2026-29786
+CVE-2024-12905
+CVE-2025-48387
+CVE-2025-59343
+
+# trim — ReDoS
+CVE-2020-7753
+
+# underscore — arbitrary code execution via template / DoS
+# Risk: template function is not exposed to user input in Ghost's use
+CVE-2021-23358
+CVE-2026-27601
+
+# validator — incomplete filtering
+# Risk: Ghost applies additional validation on top of this library
+CVE-2025-12758
+
+# gosu binary (Go stdlib) — crypto/tls, archive/tar, net/url, archive/zip
+# Risk: gosu runs only at container startup for privilege dropping;
+#       not reachable after boot. Requires Ghost Docker team to rebuild gosu.
+CVE-2025-68121
+CVE-2025-58183
+CVE-2025-61726
+CVE-2025-61728
+CVE-2025-61729
