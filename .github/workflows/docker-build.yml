@@ -7,13 +7,27 @@ on:
   pull_request:
     branches: ["main"]
 
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+
 env:
   IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/atechbroe-blog
 
 jobs:
-  # ── 1. Build & Test ────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
+# 1. Build & Test
+# ─────────────────────────────────────────────
   build-and-test:
+
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
@@ -42,69 +56,102 @@ jobs:
 
       - name: Wait for healthy status
         run: |
-          echo "Waiting for Ghost to become healthy..."
-          for i in $(seq 1 24); do
+          echo "Waiting for Ghost..."
+          for i in $(seq 1 30); do
             STATUS=$(docker inspect --format='{{.State.Health.Status}}' ghost-test 2>/dev/null || echo "starting")
-            echo "[$i/24] $STATUS"
-            [ "$STATUS" = "healthy" ] && break
-            [ $i -eq 24 ] && { echo "Timed out waiting for healthy status"; docker logs ghost-test; exit 1; }
+            echo "[$i/30] $STATUS"
+            if [ "$STATUS" = "healthy" ]; then
+              exit 0
+            fi
             sleep 5
           done
+          echo "Container failed health check"
+          docker logs ghost-test
+          exit 1
 
-      - name: Verify non-root user
+      - name: Verify container user
         run: |
           USER=$(docker exec ghost-test whoami)
           echo "Running as: $USER"
-          [ "$USER" = "node" ] || { echo "ERROR: expected 'node', got '$USER'"; exit 1; }
+          [ "$USER" = "node" ] || exit 1
 
       - name: Verify HTTP 200
         run: |
           CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:2368/)
           echo "HTTP status: $CODE"
-          [ "$CODE" = "200" ] || { echo "ERROR: expected 200, got $CODE"; docker logs ghost-test; exit 1; }
+          [ "$CODE" = "200" ] || exit 1
 
       - name: Cleanup
         if: always()
-        run: docker stop ghost-test && docker rm ghost-test
+        run: |
+          docker stop ghost-test || true
+          docker rm ghost-test || true
 
-  # ── 2. Publish to Docker Hub ────────────────────────────────────
-  publish:
+
+# ─────────────────────────────────────────────
+# 2. Security Scan
+# ─────────────────────────────────────────────
+  security-scan:
+
     runs-on: ubuntu-latest
     needs: build-and-test
-    # Only publish on push to main or a version tag — not on PRs
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image for scanning
+        run: docker build -t atechbroe-blog:scan .
+
+      - name: Scan image vulnerabilities
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: atechbroe-blog:scan
+          format: table
+          exit-code: 1
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+
+# ─────────────────────────────────────────────
+# 3. Publish to Docker Hub
+# ─────────────────────────────────────────────
+  publish:
+
+    runs-on: ubuntu-latest
+    needs: [build-and-test, security-scan]
     if: github.event_name == 'push'
 
     steps:
+
       - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Generate image tags & labels
+      - name: Generate image tags
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            # branch push → atechbroe-blog:main
             type=ref,event=branch
-            # version tag v1.2.3 → :1.2.3 and :1.2
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            # always tag the commit SHA for traceability
             type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push to Docker Hub
+      - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
