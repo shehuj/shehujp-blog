@@ -1,15 +1,19 @@
 terraform {
   # S3 remote state with DynamoDB locking.
-  # Bucket, region, and lock table are passed at init time via -backend-config
-  # so they never need to be hardcoded here.
+  # bucket, region, and dynamodb_table are never hardcoded here — they are
+  # injected at `terraform init` time from GitHub Actions secrets:
   #
-  # Local init example:
+  #   Secret name              Maps to
+  #   ─────────────────────    ─────────────────────────────
+  #   TF_STATE_BUCKET          -backend-config="bucket=..."
+  #   TF_STATE_REGION          -backend-config="region=..."
+  #   TF_STATE_LOCK_TABLE      -backend-config="dynamodb_table=..."
+  #
+  # Local init (replace <...> with the values from your GitHub secrets):
   #   terraform init \
-  #     -backend-config="bucket=ec2-shutdown-lambda-bucket" \
-  #     -backend-config="region=us-east-1" \
-  #     -backend-config="dynamodb_table=dyning_table"
-  #
-  # In CI the GitHub Actions workflow passes these via secrets (see terraform.yml).
+  #     -backend-config="bucket=<TF_STATE_BUCKET>" \
+  #     -backend-config="region=<TF_STATE_REGION>" \
+  #     -backend-config="dynamodb_table=<TF_STATE_LOCK_TABLE>"
   backend "s3" {
     key     = "ghost-blog/terraform.tfstate"
     encrypt = true
