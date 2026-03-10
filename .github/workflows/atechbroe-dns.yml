@@ -48,7 +48,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region:     ${{ secrets.TF_VAR_AWS_REGION }}
+          aws-region:     ${{ secrets.AWS_REGION }}
 
       # ── 2. Resolve and validate IP ───────────────────────────────────────────
       - name: Resolve and validate target IP

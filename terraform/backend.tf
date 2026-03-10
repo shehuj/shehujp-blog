@@ -8,7 +8,9 @@ terraform {
   #     -backend-config="region=$AWS_REGION" \
   #     -backend-config="dynamodb_table=$DYNAMOTBALE_TF"
   backend "s3" {
+    bucket  = "ec2-shutdown-lambda-bucket"
     key     = "ghost-blog/terraform.tfstate"
+    region  = "us-east-1"
     encrypt = true
   }
-}
+}   
