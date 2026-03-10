@@ -4,9 +4,10 @@ name: Deploy — Rolling Restart Ghost on EC2
 # Can also be triggered manually (e.g. after a hotfix or config change).
 #
 # Pre-requisites (GitHub Secrets):
-#   AWS_ROLE_ARN      — OIDC role with ssm:SendCommand + ec2:DescribeInstances
-#   AWS_REGION        — e.g. us-east-1
-#   GHOST_URL         — e.g. https://blog.atechbroe.com (used for health check)
+#   AWS_ACCESS_KEY_ID     — IAM user with ssm:SendCommand + ec2:DescribeInstances
+#   AWS_SECRET_ACCESS_KEY — corresponding secret key
+#   AWS_REGION            — e.g. us-east-1
+#   GHOST_URL             — e.g. https://atechbroe.com (used for health check)
 
 on:
   workflow_run:
@@ -27,7 +28,6 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  id-token: write  # OIDC
   contents: read
 
 jobs:
@@ -48,12 +48,13 @@ jobs:
 
     steps:
 
-      # ── 1. AWS auth via OIDC ─────────────────────────────────────────────────
-      - name: Configure AWS credentials (OIDC)
+      # ── 1. AWS auth ───────────────────────────────────────────────────────────
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region:     ${{ secrets.AWS_REGION }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
 
       # ── 2. Find the running EC2 instance by tag ──────────────────────────────
       - name: Discover EC2 instance
