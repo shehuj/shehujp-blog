@@ -177,7 +177,7 @@ aws dynamodb create-table \
   --billing-mode PAY_PER_REQUEST
 ```
 
-Then add `BACKEN_TF`, `DYNAMOTBALE_TF`, and `AWS_REGION` as GitHub Secrets (see [Required GitHub Secrets](#required-github-secrets)).
+Then add `BACKEND_TF`, `DYNAMOTBALE_TF`, and `AWS_REGION` as GitHub Secrets (see [Required GitHub Secrets](#required-github-secrets)).
 
 ### Local `terraform init`
 
@@ -187,7 +187,7 @@ cp terraform.tfvars.example terraform.tfvars
 # edit terraform.tfvars with your values
 
 terraform init \
-  -backend-config="bucket=$BACKEN_TF" \
+  -backend-config="bucket=$BACKEND_TF" \
   -backend-config="region=$AWS_REGION" \
   -backend-config="dynamodb_table=$DYNAMOTBALE_TF"
 
@@ -325,7 +325,7 @@ Add these under **Settings → Secrets and variables → Actions**:
 | --- | --- |
 | `AWS_REGION` | AWS region, e.g. `us-east-1` |
 | `AWS_ROLE_ARN` | IAM role ARN for OIDC authentication (no static credentials) |
-| `BACKEN_TF` | S3 bucket name for Terraform state |
+| `BACKEND_TF` | S3 bucket name for Terraform state |
 | `DYNAMOTBALE_TF` | DynamoDB table name for Terraform state locking |
 | `GHOST_URL` | Public blog URL, e.g. `https://atechbroe.com` |
 | `DOCKERHUB_USERNAME` | Docker Hub username |
