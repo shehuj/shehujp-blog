@@ -7,7 +7,7 @@ on:
   pull_request:
     branches: ["main", "dev"]
     paths: ["terraform/**"]
-  workflow_dispatch: allow manual runs
+  workflow_dispatch: 
 
 concurrency:
   group: terraform-${{ github.ref }}
