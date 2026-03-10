@@ -14,7 +14,7 @@ A self-hosted [Ghost 6](https://ghost.org/) blog deployed to AWS EC2 via Docker,
 - [CI/CD Pipeline](#cicd-pipeline)
 - [SSL / TLS Setup](#ssl--tls-setup)
 - [DNS Management](#dns-management)
-- [GitHub Secrets & OIDC Setup](#github-secrets--oidc-setup)
+- [GitHub Secrets](#github-secrets)
 - [Operations](#operations)
 - [Security Notes](#security-notes)
 
@@ -60,23 +60,27 @@ atechbroe-blog/
 │
 └── .github/
     └── workflows/
-        ├── ghost-CI.yml                # Build → Test → Security scan → Publish
-        ├── atechbroe-infra.yml         # Terraform plan (dev) → apply (main)
-        ├── atechbroe-deploy.yml        # Rolling restart via SSM after publish
-        └── atechbroe-dns.yml           # Update Route 53 A records on IP change
+        ├── ghost-CI.yml                # Build → Test → Scan → Publish (main/tags)
+        ├── atechbroe-infra.yml         # Terraform plan (PR) / apply (manual only)
+        ├── atechbroe-deploy.yml        # Rolling restart via SSM (merge to main / manual)
+        └── atechbroe-dns.yml           # Update Route 53 A records (manual only)
 ```
 
 ---
 
 ## Branching Strategy
 
-| Branch | What runs |
-| --- | --- |
-| `dev` (push / PR) | Build, test, security scan, Terraform plan |
-| `main` (push / merge) | All of the above **+** Docker publish, Terraform apply, rolling deploy |
-| `v*.*.*` tag | Build, test, scan, **+** Docker publish with semver tags |
+| Event | What runs | What doesn't run |
+| --- | --- | --- |
+| Push to `dev` | Build, test, scan | Publish, infra plan, deploy |
+| PR to `dev` / `main` | Build, test, scan, **Terraform plan** (posted as PR comment) | Publish, deploy |
+| Merge to `main` | Build, test, scan, **publish**, **rolling deploy** | Terraform apply |
+| `v*.*.*` tag | Build, test, scan, **publish** (semver tags) | Deploy, infra |
+| Manual dispatch | Any workflow individually, with control inputs | — |
 
-> Work on `dev`, open a PR to `main`. The PR shows the Terraform plan as a comment and runs all tests before the merge button turns green.
+> Infra changes (Terraform apply) are **never automatic** — they require a manual dispatch with `action=apply`. This prevents unintended infrastructure changes from code-only merges.
+
+> Open a PR to `main` to preview both CI results and the Terraform plan diff before merging.
 
 ---
 
@@ -191,70 +195,85 @@ terraform apply
 
 ## CI/CD Pipeline
 
-The four workflows form a complete build-to-production pipeline:
+### On pull request
 
 ```text
-Push to dev / PR opened
-        │
-        ▼
-  ghost-CI.yml
-  ├── build-and-test
-  │     ├── Build image (GHA layer cache)
-  │     ├── Start container with SQLite
-  │     ├── Wait for HEALTHCHECK → healthy
-  │     ├── Assert process user = node
-  │     └── Assert HTTP 200 on :2368
+PR opened / updated
   │
-  ├── security-scan  (continue-on-error)
-  │     ├── Rebuild for Trivy
-  │     └── Trivy CRITICAL/HIGH scan (ignores .trivyignore)
+  ├── ghost-CI.yml
+  │     ├── build-and-test
+  │     │     ├── Build image (GHA cache)
+  │     │     ├── Start container (SQLite)
+  │     │     ├── Wait for HEALTHCHECK → healthy
+  │     │     ├── Assert process user = node
+  │     │     └── Assert HTTP 200 on :2368
+  │     └── security-scan  (continue-on-error)
+  │           ├── Rebuild for Trivy
+  │           └── Trivy CRITICAL/HIGH scan (.trivyignore applied)
   │
-  └── [publish — main/tag pushes only]
-        ├── Login to Docker Hub
-        └── Build & push multi-arch (amd64 + arm64)
-              Tags: :main  :sha-<commit>  :latest  :vX.Y.Z
-
-  atechbroe-infra.yml
-  └── plan  (all branches)
+  └── atechbroe-infra.yml  (only when terraform/** or workflow file changes)
         ├── terraform fmt -check
-        ├── terraform init  (lock table injected from secret)
+        ├── terraform init
         ├── terraform validate
         ├── terraform plan  (-detailed-exitcode)
         └── Post plan diff as PR comment
-
-─────────────── merge to main ─────────────────
-
-  atechbroe-infra.yml
-  └── apply  (main only, production environment gate)
-        ├── terraform init
-        └── terraform apply  (uses saved plan artifact)
-
-  atechbroe-deploy.yml  (triggered by ghost-CI success on main)
-  └── deploy
-        ├── Discover EC2 instance by Environment=production tag
-        ├── SSM send-command: systemctl restart ghost
-        │     └── systemd ExecStartPre pulls new Docker Hub image
-        ├── Wait for SSM command Success
-        └── Health check: curl atechbroe.com → HTTP 200
 ```
 
-### Workflow files
+### On merge to main
 
-| File | Trigger | Purpose |
+```text
+Merge to main
+  │
+  ├── ghost-CI.yml
+  │     ├── build-and-test  (same as PR)
+  │     ├── security-scan   (same as PR)
+  │     └── publish
+  │           ├── Login to Docker Hub
+  │           └── Build & push multi-arch (amd64 + arm64)
+  │                 Tags: :main  :sha-<commit>  :latest
+  │
+  └── atechbroe-deploy.yml  (triggers when ghost-CI completes)
+        ├── Discover EC2 by Environment=production tag
+        ├── SSM send-command: systemctl restart ghost
+        │     └── ExecStartPre pulls latest Docker Hub image
+        ├── Wait for SSM command: Success
+        └── Health check: HTTP 200 on atechbroe.com
+```
+
+### Manual dispatch only
+
+```text
+Actions → Terraform — Plan / Apply → Run workflow
+  └── atechbroe-infra.yml
+        input: action = plan   →  plan only
+        input: action = apply  →  plan + apply  (production gate)
+
+Actions → Deploy — Rolling Restart → Run workflow
+  └── atechbroe-deploy.yml
+        input: force = true  →  restart regardless of new image
+
+Actions → DNS — Update atechbroe.com → Run workflow
+  └── atechbroe-dns.yml
+        inputs: server_ip / ttl / dry_run
+```
+
+### Workflow reference
+
+| Workflow | Auto trigger | Manual inputs |
 | --- | --- | --- |
-| `ghost-CI.yml` | Push/PR to `dev`/`main`, semver tags | Build, test, Trivy scan, publish |
-| `atechbroe-infra.yml` | Push/PR to `dev`/`main` (`terraform/**`) | Terraform plan + apply |
-| `atechbroe-deploy.yml` | After `ghost-CI` succeeds on `main` | Rolling restart via SSM |
-| `atechbroe-dns.yml` | Manual (`workflow_dispatch`) | Update Route 53 A records |
+| `ghost-CI.yml` | Push/PR to `dev`/`main`; semver tags | `publish` (bool), `skip_tests` (bool) |
+| `atechbroe-infra.yml` | PR to `dev`/`main` (terraform/** changes) | `action`: `plan` / `apply` |
+| `atechbroe-deploy.yml` | After `ghost-CI` succeeds on `main` | `force` (bool) |
+| `atechbroe-dns.yml` | Manual only | `server_ip`, `ttl`, `dry_run` |
 
 ### Docker image tags
 
 | Event | Tags produced |
 | --- | --- |
-| Push to `main` | `:main`, `:sha-<commit>`, `:latest` |
+| Merge / push to `main` | `:main`, `:sha-<commit>`, `:latest` |
 | Push tag `v1.2.3` | `:1.2.3`, `:1.2`, `:sha-<commit>` |
-| Push to `dev` | Build + test + scan only — no publish |
-| Pull request | Build + test + scan only — no publish |
+| Push to `dev` / PR | Build + test + scan only — no publish |
+| Manual dispatch with `publish=true` | Same tags as branch push |
 
 ---
 
