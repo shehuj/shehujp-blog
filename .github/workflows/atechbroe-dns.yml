@@ -1,4 +1,4 @@
-name: DNS — Update jenom.com
+name: DNS — Update shehujp.com
 
 # ── Triggers ──────────────────────────────────────────────────────────────────
 on:
@@ -22,7 +22,7 @@ on:
 
 # Never run two DNS updates concurrently
 concurrency:
-  group: dns-jenom
+  group: dns-shehujp
   cancel-in-progress: false
 
 permissions:
@@ -37,7 +37,7 @@ jobs:
     # Requires manual approval gate in the GitHub 'production' environment
     environment:
       name: production
-      url: https://www.jenom.com
+      url: https://www.shehujp.com
 
     steps:
       - uses: actions/checkout@v4
@@ -91,7 +91,7 @@ jobs:
       # ── 3. Show current DNS state ─────────────────────────────────────────────
       - name: Show current DNS records
         run: |
-          echo "=== Current Route 53 A records for jenom.com ==="
+          echo "=== Current Route 53 A records for shehujp.com ==="
           aws route53 list-resource-record-sets \
             --hosted-zone-id "${{ secrets.ROUTE53_ZONE_ID }}" \
             --query "ResourceRecordSets[?Type=='A']" \
@@ -104,8 +104,8 @@ jobs:
           echo "=== DRY RUN — no changes will be applied ==="
           echo ""
           echo "Would update:"
-          echo "  jenom.com     A → ${{ steps.ip.outputs.ip }}  TTL ${{ inputs.ttl }}"
-          echo "  www.jenom.com A → ${{ steps.ip.outputs.ip }}  TTL ${{ inputs.ttl }}"
+          echo "  shehujp.com     A → ${{ steps.ip.outputs.ip }}  TTL ${{ inputs.ttl }}"
+          echo "  www.shehujp.com A → ${{ steps.ip.outputs.ip }}  TTL ${{ inputs.ttl }}"
 
       # ── 5. Apply ──────────────────────────────────────────────────────────────
       - name: Update Route 53 A records
@@ -123,7 +123,7 @@ jobs:
               {
                 "Action": "UPSERT",
                 "ResourceRecordSet": {
-                  "Name": "jenom.com",
+                  "Name": "shehujp.com",
                   "Type": "A",
                   "TTL": $TTL,
                   "ResourceRecords": [{ "Value": "$TARGET_IP" }]
@@ -132,7 +132,7 @@ jobs:
               {
                 "Action": "UPSERT",
                 "ResourceRecordSet": {
-                  "Name": "www.jenom.com",
+                  "Name": "www.shehujp.com",
                   "Type": "A",
                   "TTL": $TTL,
                   "ResourceRecords": [{ "Value": "$TARGET_IP" }]
@@ -169,7 +169,7 @@ jobs:
           ALL_OK=true
 
           for resolver in "8.8.8.8" "1.1.1.1" "9.9.9.9"; do
-            for host in "jenom.com" "www.jenom.com"; do
+            for host in "shehujp.com" "www.shehujp.com"; do
               RESOLVED=$(dig +short "$host" "@$resolver" A 2>/dev/null | head -1 || true)
               if [ "$RESOLVED" = "$TARGET_IP" ]; then
                 echo "✅  [$resolver]  $host → $RESOLVED"
@@ -182,7 +182,7 @@ jobs:
 
           echo ""
           if [ "$ALL_OK" = "true" ]; then
-            echo "All resolvers confirmed: jenom.com → $TARGET_IP"
+            echo "All resolvers confirmed: shehujp.com → $TARGET_IP"
           else
             TTL_MINS=$(( ${{ inputs.ttl || 300 }} / 60 ))
             echo "Propagation in progress — full global update can take up to ${TTL_MINS} minute(s)."
@@ -195,14 +195,14 @@ jobs:
           MODE="Applied"
           [ "${{ inputs.dry_run }}" = "true" ] && MODE="Dry run (no changes)"
           {
-            echo "## DNS Update — jenom.com"
+            echo "## DNS Update — shehujp.com"
             echo ""
             echo "**Mode:** $MODE"
             echo ""
             echo "| Record | Type | Value | TTL |"
             echo "| --- | --- | --- | --- |"
-            echo "| \`jenom.com\` | A | \`${{ steps.ip.outputs.ip }}\` | ${{ inputs.ttl || 300 }}s |"
-            echo "| \`www.jenom.com\` | A | \`${{ steps.ip.outputs.ip }}\` | ${{ inputs.ttl || 300 }}s |"
+            echo "| \`shehujp.com\` | A | \`${{ steps.ip.outputs.ip }}\` | ${{ inputs.ttl || 300 }}s |"
+            echo "| \`www.shehujp.com\` | A | \`${{ steps.ip.outputs.ip }}\` | ${{ inputs.ttl || 300 }}s |"
             echo ""
             echo "**Triggered by:** @${{ github.actor }}"
           } >> "$GITHUB_STEP_SUMMARY"

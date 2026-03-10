@@ -139,7 +139,7 @@ jobs:
 
     environment:
       name: production
-      url: https://www.jenom.com
+      url: https://www.shehujp.com
 
     steps:
       - uses: actions/checkout@v4

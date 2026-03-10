@@ -13,7 +13,7 @@ route53domains client always targets that region regardless of your normal
 AWS_REGION setting.
 
 Usage:
-    python3 update_nameservers.py                     # auto-detect zone for jenom.com
+    python3 update_nameservers.py                     # auto-detect zone for shehujp.com
     python3 update_nameservers.py --zone-id Z0123456  # use a specific zone ID
     python3 update_nameservers.py --dry-run           # preview without applying
 """
@@ -25,7 +25,7 @@ import time
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 
-DOMAIN = "jenom.com"
+DOMAIN = "shehujp.com"
 
 
 def get_zone_id_by_name(domain: str) -> str:

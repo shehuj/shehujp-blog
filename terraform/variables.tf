@@ -19,7 +19,7 @@ variable "instance_type" {
 variable "ghost_url" {
   description = "Public URL of the Ghost blog including scheme, e.g. https://blog.example.com"
   type        = string
-  default     = "https://www.jenom.com"
+  default     = "https://www.shehujp.com"
 }
 
 variable "ghost_image" {
