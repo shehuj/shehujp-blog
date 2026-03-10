@@ -1,14 +1,14 @@
 # ── Route 53 Hosted Zone ──────────────────────────────────────────────────────
 resource "aws_route53_zone" "main" {
-  name = "jenom.com"
+  name = "shehujp.com"
 
-  tags = { Name = "jenom.com" }
+  tags = { Name = "shehujp.com" }
 }
 
 # ── A records — root + www → ALB (ALIAS) ──────────────────────────────────────
 resource "aws_route53_record" "root" {
   zone_id = aws_route53_zone.main.zone_id
-  name    = "jenom.com"
+  name    = "shehujp.com"
   type    = "A"
 
   alias {
@@ -20,7 +20,7 @@ resource "aws_route53_record" "root" {
 
 resource "aws_route53_record" "www" {
   zone_id = aws_route53_zone.main.zone_id
-  name    = "www.jenom.com"
+  name    = "www.shehujp.com"
   type    = "A"
 
   alias {
@@ -33,13 +33,13 @@ resource "aws_route53_record" "www" {
 # ── CAA — restrict SSL issuance to Let's Encrypt only ─────────────────────────
 resource "aws_route53_record" "caa" {
   zone_id = aws_route53_zone.main.zone_id
-  name    = "jenom.com"
+  name    = "shehujp.com"
   type    = "CAA"
   ttl     = 3600
   records = [
     "0 issue \"letsencrypt.org\"",
     "0 issuewild \"letsencrypt.org\"",
-    "0 iodef \"mailto:admin@jenom.com\"",
+    "0 iodef \"mailto:admin@shehujp.com\"",
   ]
 }
 

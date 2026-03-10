@@ -32,7 +32,7 @@ A self-hosted [Ghost 6](https://ghost.org/) blog deployed to AWS EC2 via Docker,
 | **TLS** | AWS ACM certificate (auto-renewed) |
 | **Infra-as-Code** | Terraform ≥ 1.7 |
 | **CI/CD** | GitHub Actions |
-| **DNS** | AWS Route 53 (`jenom.com`) |
+| **DNS** | AWS Route 53 (`shehujp.com`) |
 
 ---
 
@@ -148,7 +148,7 @@ docker build -t atechbroe-blog .
                 ┌──────────────────────────────────────┐
                 │            AWS Account               │
                 │                                      │
-  Internet ────▶│  Route 53 (jenom.com)                │
+  Internet ────▶│  Route 53 (shehujp.com)                │
                 │       │ ALIAS → ALB                  │
                 │       ▼                              │
                 │  ALB (HTTPS :443, ACM cert)          │
@@ -247,7 +247,7 @@ Merge to main
         ├── SSM send-command: systemctl restart ghost
         │     └── ExecStartPre pulls latest Docker Hub image
         ├── Wait for SSM command: Success
-        └── Health check: HTTP 200 on jenom.com
+        └── Health check: HTTP 200 on shehujp.com
 ```
 
 ### Manual dispatch only
@@ -262,7 +262,7 @@ Actions → Deploy — Rolling Restart → Run workflow
   └── atechbroe-deploy.yml
         input: force = true  →  restart regardless of new image
 
-Actions → DNS — Update jenom.com → Run workflow
+Actions → DNS — Update shehujp.com → Run workflow
   └── atechbroe-dns.yml
         inputs: server_ip / ttl / dry_run
 ```
@@ -291,7 +291,7 @@ Actions → DNS — Update jenom.com → Run workflow
 
 TLS is handled entirely by the **ALB + AWS Certificate Manager**. No manual certificate setup is required.
 
-- Terraform provisions the ACM certificate for `jenom.com` and `www.jenom.com`
+- Terraform provisions the ACM certificate for `shehujp.com` and `www.shehujp.com`
 - ACM validates ownership automatically via DNS CNAME records in Route 53
 - The ALB HTTPS listener uses the certificate and terminates TLS before traffic reaches the EC2 instance
 - AWS automatically renews the certificate before expiry — no cron job or Certbot needed
@@ -303,7 +303,7 @@ TLS is handled entirely by the **ALB + AWS Certificate Manager**. No manual cert
 
 Route 53 ALIAS records point automatically to the ALB — they update when the ALB scales or changes IPs with no manual intervention needed.
 
-Run the `atechbroe-dns.yml` workflow manually from **Actions → DNS — Update jenom.com → Run workflow** if you ever need to force-update the ALIAS target (e.g. after switching to a new ALB).
+Run the `atechbroe-dns.yml` workflow manually from **Actions → DNS — Update shehujp.com → Run workflow** if you ever need to force-update the ALIAS target (e.g. after switching to a new ALB).
 
 | Input | Description |
 | --- | --- |
@@ -311,7 +311,7 @@ Run the `atechbroe-dns.yml` workflow manually from **Actions → DNS — Update 
 | `ttl` | DNS TTL in seconds (`60` / `300` / `3600`). Use `60` during migrations. |
 | `dry_run` | Preview changes without applying. |
 
-The workflow validates the IP, upserts both `jenom.com` and `www.jenom.com` records, waits for Route 53 propagation, and verifies resolution from Google, Cloudflare, and Quad9.
+The workflow validates the IP, upserts both `shehujp.com` and `www.shehujp.com` records, waits for Route 53 propagation, and verifies resolution from Google, Cloudflare, and Quad9.
 
 ---
 
@@ -346,10 +346,10 @@ Go to **Settings → Secrets and variables → Actions** and add:
 | `AWS_SECRET_ACCESS_KEY` | Secret access key from the step above |
 | `AWS_REGION` | `us-east-1` |
 | `DYNAMOTBALE_TF` | DynamoDB table name for Terraform state locking |
-| `GHOST_URL` | `https://www.jenom.com` |
+| `GHOST_URL` | `https://www.shehujp.com` |
 | `DOCKERHUB_USERNAME` | Docker Hub username |
 | `DOCKERHUB_TOKEN` | Docker Hub personal access token (not your password) |
-| `ROUTE53_ZONE_ID` | Route 53 hosted zone ID for `jenom.com` (from `terraform output zone_id`) |
+| `ROUTE53_ZONE_ID` | Route 53 hosted zone ID for `shehujp.com` (from `terraform output zone_id`) |
 | `SERVER_IP` | EC2 Elastic IP (fallback for DNS workflow — from `terraform output instance_ip`) |
 
 ---

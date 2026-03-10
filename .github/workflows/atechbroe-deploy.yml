@@ -7,7 +7,7 @@ name: Deploy — Rolling Restart Ghost on EC2
 #   AWS_ACCESS_KEY_ID     — IAM user with ssm:SendCommand + ec2:DescribeInstances
 #   AWS_SECRET_ACCESS_KEY — corresponding secret key
 #   AWS_REGION            — e.g. us-east-1
-#   GHOST_URL             — e.g. https://www.jenom.com (used for health check)
+#   GHOST_URL             — e.g. https://www.shehujp.com (used for health check)
 #   DOCKERHUB_USERNAME    — used to resolve the full image name
 
 on:
@@ -50,7 +50,7 @@ jobs:
 
     environment:
       name: production
-      url: https://www.jenom.com
+      url: https://www.shehujp.com
 
     steps:
 
