@@ -26,7 +26,6 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  id-token: write  # OIDC
   contents: read
 
 jobs:
@@ -43,12 +42,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ── 1. AWS auth via OIDC (no long-lived credentials) ─────────────────────
+      # ── 1. AWS auth ───────────────────────────────────────────────────────────
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region:     ${{ secrets.AWS_REGION }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
 
       # ── 2. Resolve and validate IP ───────────────────────────────────────────
       - name: Resolve and validate target IP

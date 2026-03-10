@@ -14,7 +14,7 @@ A self-hosted [Ghost 6](https://ghost.org/) blog deployed to AWS EC2 via Docker,
 - [CI/CD Pipeline](#cicd-pipeline)
 - [SSL / TLS Setup](#ssl--tls-setup)
 - [DNS Management](#dns-management)
-- [Required GitHub Secrets](#required-github-secrets)
+- [GitHub Secrets & OIDC Setup](#github-secrets--oidc-setup)
 - [Operations](#operations)
 - [Security Notes](#security-notes)
 
@@ -30,7 +30,7 @@ A self-hosted [Ghost 6](https://ghost.org/) blog deployed to AWS EC2 via Docker,
 | **Registry** | Docker Hub |
 | **Hosting** | AWS EC2 (Amazon Linux 2023) |
 | **Infra-as-Code** | Terraform ≥ 1.7 |
-| **CI/CD** | GitHub Actions (OIDC — no long-lived AWS credentials) |
+| **CI/CD** | GitHub Actions |
 | **DNS** | AWS Route 53 (`atechbroe.com`) |
 
 ---
@@ -45,7 +45,7 @@ atechbroe-blog/
 ├── .trivyignore                        # Suppressed upstream CVEs (Ghost node_modules)
 │
 ├── terraform/
-│   ├── backend.tf                      # Partial S3 backend (bucket/table injected at init)
+│   ├── backend.tf                      # S3 remote state (bucket + region hardcoded)
 │   ├── versions.tf                     # Terraform + provider version constraints
 │   ├── providers.tf                    # AWS + random provider config
 │   ├── variables.tf                    # Input variable declarations
@@ -55,7 +55,8 @@ atechbroe-blog/
 │   ├── secrets.tf                      # Secrets Manager (DB credentials)
 │   ├── dns.tf                          # Route 53 hosted zone + A + CAA records
 │   ├── outputs.tf                      # Instance ID, EIP, SSM connect command
-│   └── userdata.sh                     # EC2 bootstrap: Docker, Ghost stack, systemd
+│   └── scripts/
+│       └── userdata.sh                 # EC2 bootstrap: Docker, Ghost stack, systemd
 │
 └── .github/
     └── workflows/
@@ -158,42 +159,21 @@ docker build -t atechbroe-blog .
                 └──────────────────────────────────┘
 ```
 
-### Backend setup (S3 + DynamoDB)
+### Local `terraform init` and deploy
 
-The Terraform state is stored remotely. Create the bucket and lock table once, then add them as GitHub Secrets:
-
-```sh
-# Create state bucket
-aws s3api create-bucket --bucket <your-bucket-name> --region us-east-1
-aws s3api put-bucket-versioning \
-  --bucket <your-bucket-name> \
-  --versioning-configuration Status=Enabled
-
-# Create DynamoDB lock table
-aws dynamodb create-table \
-  --table-name <your-lock-table-name> \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST
-```
-
-Then add `BACKEND_TF`, `DYNAMOTBALE_TF`, and `AWS_REGION` as GitHub Secrets (see [Required GitHub Secrets](#required-github-secrets)).
-
-### Local `terraform init`
+The S3 backend bucket and region are configured directly in `backend.tf`. For local runs:
 
 ```sh
 cd terraform
 cp terraform.tfvars.example terraform.tfvars
 # edit terraform.tfvars with your values
 
-terraform init \
-  -backend-config="bucket=$BACKEND_TF" \
-  -backend-config="region=$AWS_REGION" \
-  -backend-config="dynamodb_table=$DYNAMOTBALE_TF"
-
+terraform init
 terraform plan
 terraform apply
 ```
+
+> The CI workflow passes `-backend-config` flags to allow the DynamoDB lock table to be injected from the `DYNAMOTBALE_TF` secret without hardcoding it in source.
 
 ### Key security features
 
@@ -237,7 +217,7 @@ Push to dev / PR opened
   atechbroe-infra.yml
   └── plan  (all branches)
         ├── terraform fmt -check
-        ├── terraform init  (backend from secrets)
+        ├── terraform init  (lock table injected from secret)
         ├── terraform validate
         ├── terraform plan  (-detailed-exitcode)
         └── Post plan diff as PR comment
@@ -317,33 +297,42 @@ The workflow validates the IP, upserts both `atechbroe.com` and `www.atechbroe.c
 
 ---
 
-## Required GitHub Secrets
+## GitHub Secrets
 
-Add these under **Settings → Secrets and variables → Actions**:
+### Create an IAM user for CI
 
-| Secret | Description |
+```sh
+aws iam create-user --user-name github-actions-atechbroe
+
+# Attach permissions needed by Terraform + deploy + DNS workflows
+aws iam attach-user-policy \
+  --user-name github-actions-atechbroe \
+  --policy-arn arn:aws:iam::aws:policy/PowerUserAccess
+
+aws iam attach-user-policy \
+  --user-name github-actions-atechbroe \
+  --policy-arn arn:aws:iam::aws:policy/AmazonSSMFullAccess
+
+# Generate access keys
+aws iam create-access-key --user-name github-actions-atechbroe
+# → save AccessKeyId and SecretAccessKey — shown once only
+```
+
+### Add secrets to GitHub
+
+Go to **Settings → Secrets and variables → Actions** and add:
+
+| Secret | Value |
 | --- | --- |
-| `AWS_REGION` | AWS region, e.g. `us-east-1` |
-| `AWS_ROLE_ARN` | IAM role ARN for OIDC authentication (no static credentials) |
-| `BACKEND_TF` | S3 bucket name for Terraform state |
+| `AWS_ACCESS_KEY_ID` | Access key ID from the step above |
+| `AWS_SECRET_ACCESS_KEY` | Secret access key from the step above |
+| `AWS_REGION` | `us-east-1` |
 | `DYNAMOTBALE_TF` | DynamoDB table name for Terraform state locking |
-| `GHOST_URL` | Public blog URL, e.g. `https://atechbroe.com` |
+| `GHOST_URL` | `https://atechbroe.com` |
 | `DOCKERHUB_USERNAME` | Docker Hub username |
 | `DOCKERHUB_TOKEN` | Docker Hub personal access token (not your password) |
 | `ROUTE53_ZONE_ID` | Route 53 hosted zone ID for `atechbroe.com` |
 | `SERVER_IP` | Current server Elastic IP (fallback for DNS workflow) |
-
-### GitHub OIDC trust policy
-
-The `AWS_ROLE_ARN` role must trust the GitHub OIDC provider with a condition scoped to this repository:
-
-```json
-{
-  "StringLike": {
-    "token.actions.githubusercontent.com:sub": "repo:your-org/atechbroe-blog:*"
-  }
-}
-```
 
 ---
 
@@ -403,8 +392,6 @@ Re-tag the previous image on Docker Hub as `:latest`, then trigger the deploy wo
   docker pull ghost:6.14-alpine
   docker inspect ghost:6.14-alpine --format '{{index .RepoDigests 0}}'
   ```
-
-- **No long-lived AWS credentials** — all workflows authenticate via GitHub OIDC (`id-token: write`).
 
 - **Secrets never leave AWS** — DB passwords are generated by Terraform, stored in Secrets Manager, and fetched by the EC2 instance at boot. They are not stored in GitHub, `.env`, or userdata.
 

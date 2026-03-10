@@ -1,10 +1,10 @@
 terraform {
   # bucket, region, and dynamodb_table are injected at `terraform init`
-  # from GitHub Actions secrets: BACKEN_TF, AWS_REGION, DYNAMOTBALE_TF
+  # from GitHub Actions secrets: BACKEND_TF, AWS_REGION, DYNAMOTBALE_TF
   #
   # Local init:
   #   terraform init \
-  #     -backend-config="bucket=$BACKEN_TF" \
+  #     -backend-config="bucket=$BACKEND_TF" \
   #     -backend-config="region=$AWS_REGION" \
   #     -backend-config="dynamodb_table=$DYNAMOTBALE_TF"
   backend "s3" {
