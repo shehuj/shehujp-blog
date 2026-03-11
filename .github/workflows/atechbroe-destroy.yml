@@ -1,0 +1,191 @@
+name: Terraform — Destroy (manual)
+
+# ── Trigger ───────────────────────────────────────────────────────────────────
+# Manually dispatched only. Requires typing "destroy" to proceed — protects
+# against accidental runs from the GitHub UI.
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type "destroy" to confirm teardown of ALL resources'
+        required: true
+        type: string
+      environment:
+        description: "Target environment"
+        required: false
+        default: "production"
+        type: choice
+        options: ["production"]
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: false # never interrupt a running destroy
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: "1.7.5"
+  TF_WORKING_DIR: terraform
+  TF_VAR_aws_region:  ${{ secrets.AWS_REGION }}
+  TF_VAR_ghost_url:   ${{ secrets.GHOST_URL }}
+  TF_VAR_ghost_image: ${{ secrets.DOCKERHUB_USERNAME }}/shehujp-blog:latest
+  TF_VAR_environment: ${{ inputs.environment }}
+
+jobs:
+
+# ── 1. Guard — abort if confirmation text is wrong ────────────────────────────
+  guard:
+    name: Confirmation Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Verify confirmation input
+        run: |
+          if [ "${{ inputs.confirmation }}" != "destroy" ]; then
+            echo "::error::Confirmation input must be exactly 'destroy'. Got: '${{ inputs.confirmation }}'"
+            exit 1
+          fi
+          echo "Confirmation accepted. Proceeding with destroy plan."
+
+# ── 2. Plan — show what will be deleted before any approval ───────────────────
+  plan:
+    name: Destroy Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: guard
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.BACKEND_TF }}" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.DYNAMOTBALE_TF }}"
+
+      - name: Terraform Destroy Plan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform plan \
+            -destroy \
+            -out=tfdestroyplan \
+            -input=false 2>&1 | tee destroy-plan.txt
+
+      - name: Upload destroy plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfdestroyplan
+          path: ${{ env.TF_WORKING_DIR }}/tfdestroyplan
+          retention-days: 1
+
+      - name: Write job summary
+        run: |
+          echo "## Destroy Plan" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Environment:** \`${{ inputs.environment }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Triggered by:** @${{ github.actor }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> Review the plan above before approving the destroy job." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "<details><summary>Full destroy plan</summary>" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat "${{ env.TF_WORKING_DIR }}/destroy-plan.txt" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+
+# ── 3. Destroy — gated behind production environment approval ─────────────────
+  destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: plan
+
+    environment:
+      name: production
+      url: https://www.shehujp.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.BACKEND_TF }}" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.DYNAMOTBALE_TF }}"
+
+      # Secrets Manager enforces a 7-day recovery window by default.
+      # terraform destroy would fail (or leave it pending deletion) without this.
+      # Force-delete removes it immediately so Terraform can clean up cleanly.
+      - name: Force-delete Secrets Manager secret
+        run: |
+          SECRET_NAME="ghost-blog/${{ inputs.environment }}/db"
+          SECRET_ARN=$(aws secretsmanager describe-secret \
+            --secret-id "$SECRET_NAME" \
+            --query 'ARN' \
+            --output text 2>/dev/null || true)
+
+          if [ -z "$SECRET_ARN" ] || [ "$SECRET_ARN" = "None" ]; then
+            echo "Secret '$SECRET_NAME' not found — skipping."
+          else
+            echo "Force-deleting secret: $SECRET_ARN"
+            aws secretsmanager delete-secret \
+              --secret-id "$SECRET_ARN" \
+              --force-delete-without-recovery
+            echo "Secret scheduled for immediate deletion."
+          fi
+
+      - name: Download destroy plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfdestroyplan
+          path: ${{ env.TF_WORKING_DIR }}
+
+      - name: Terraform Destroy
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply -auto-approve -input=false tfdestroyplan
+
+      - name: Write job summary
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          ICON=$([ "$STATUS" = "success" ] && echo "✅" || echo "❌")
+          echo "## Destroy Result — ${ICON} ${STATUS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Environment | \`${{ inputs.environment }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Triggered by | @${{ github.actor }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Run | [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$STATUS" = "success" ]; then
+            echo "> All resources have been destroyed. The S3 backend bucket and DynamoDB lock table were provisioned outside this repo and are **not** destroyed by this workflow." >> "$GITHUB_STEP_SUMMARY"
+          fi

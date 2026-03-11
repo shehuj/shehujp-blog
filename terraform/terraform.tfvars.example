@@ -9,7 +9,7 @@ instance_type = "t3.small"
 ghost_url = "https://blog.example.com"
 
 # Docker Hub image built by the docker-build.yml pipeline
-ghost_image = "yourdockerhubuser/atechbroe-blog:latest"
+ghost_image = "yourdockerhubuser/shehujp-blog:latest"
 
 # Optional: restrict SSH to your IP. Leave empty to use SSM only (recommended).
 allowed_ssh_cidr = ""   # e.g. "203.0.113.10/32"

@@ -1,4 +1,4 @@
-# atechbroe-blog
+# shehujp-blog
 
 A self-hosted [Ghost 6](https://ghost.org/) blog deployed to AWS EC2 via Docker, with a fully automated CI/CD pipeline — from code push to live production — using GitHub Actions and Terraform.
 
@@ -39,7 +39,7 @@ A self-hosted [Ghost 6](https://ghost.org/) blog deployed to AWS EC2 via Docker,
 ## Project Structure
 
 ```text
-atechbroe-blog/
+shehujp-blog/
 ├── Dockerfile                          # Production-hardened Ghost 6 image
 ├── docker-compose.yml                  # Local dev stack: Ghost + MySQL
 ├── .env                                # Local secrets — never commit
@@ -93,7 +93,7 @@ atechbroe-blog/
 
 ```sh
 docker run -d \
-  --name atechbroe-blog \
+  --name shehujp-blog \
   -p 2368:2368 \
   -e url=http://localhost:2368 \
   -e database__client=sqlite3 \
@@ -135,7 +135,7 @@ docker compose down
 ### Build the image locally
 
 ```sh
-docker build -t atechbroe-blog .
+docker build -t shehujp-blog .
 ```
 
 ---
