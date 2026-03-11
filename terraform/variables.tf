@@ -23,9 +23,9 @@ variable "ghost_url" {
 }
 
 variable "ghost_image" {
-  description = "Docker Hub image to run, e.g. youruser/atechbroe-blog:latest"
+  description = "Docker Hub image to run, e.g. youruser/shehujp-blog:latest"
   type        = string
-  default     = "captaincloud01/atechbroe:main"
+  default     = "captaincloud01/shehujp-blog:main"
 }
 
 variable "allowed_ssh_cidr" {

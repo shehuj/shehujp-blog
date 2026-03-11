@@ -18,10 +18,10 @@
 FROM ghost:6.14-alpine
 
 # OCI-standard image labels for auditing and registries
-LABEL org.opencontainers.image.title="atechbroe-blog" \
-      org.opencontainers.image.description="Ghost blog for atechbroe" \
-      org.opencontainers.image.vendor="atechbroe" \
-      maintainer="atechbroe"
+LABEL org.opencontainers.image.title="shehujp-blog" \
+      org.opencontainers.image.description="Ghost blog for shehujp" \
+      org.opencontainers.image.vendor="shehujp" \
+      maintainer="shehujp"
 
 # Production mode: disables debug logging, enables caching, hardens defaults
 ENV NODE_ENV=production
