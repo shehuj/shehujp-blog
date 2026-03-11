@@ -3,10 +3,10 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project     = "atechbroe-blog"
+      Project     = "shehujp-blog"
       ManagedBy   = "terraform"
       Environment = var.environment
-      Repository  = "atechbroe-blog"
+      Repository  = "shehujp-blog"
     }
   }
 }

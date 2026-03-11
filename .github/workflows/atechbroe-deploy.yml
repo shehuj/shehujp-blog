@@ -72,7 +72,7 @@ jobs:
           if [ -z "$TAG" ]; then
             TAG="latest"
           fi
-          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/atechbroe-blog:${TAG}"
+          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/shehujp-blog:${TAG}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "Target image: $IMAGE"
