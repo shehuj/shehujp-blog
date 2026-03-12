@@ -63,7 +63,7 @@ resource "aws_kms_alias" "logs" {
 # ── Security Group ────────────────────────────────────────────────────────────
 resource "aws_security_group" "ghost" {
   name        = "ghost-blog-${var.environment}"
-  description = "Ghost blog - inbound HTTP/HTTPS, optional SSH"
+  description = "Ghost blog - inbound HTTP from ALB only, SSH disabled by default"
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
