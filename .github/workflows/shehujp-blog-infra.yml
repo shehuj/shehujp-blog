@@ -6,7 +6,7 @@ on:
     branches: ["main", "dev"]
     paths:
       - "terraform/**"
-      - ".github/workflows/atechbroe-infra.yml"
+      - ".github/workflows/shehujp-blog-infra.yml"
   # Apply is manual only — infra changes are intentional, not automatic
   workflow_dispatch:
     inputs:

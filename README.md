@@ -64,9 +64,9 @@ shehujp-blog/
 └── .github/
     └── workflows/
         ├── ghost-CI.yml                # Build → Test → Scan → Publish (main/tags)
-        ├── atechbroe-infra.yml         # Terraform plan (PR) / apply (manual only)
-        ├── atechbroe-deploy.yml        # Rolling restart via SSM (merge to main / manual)
-        └── atechbroe-dns.yml           # Update Route 53 A records (manual only)
+        ├── shehujp-blog-infra.yml         # Terraform plan (PR) / apply (manual only)
+        ├── shehujp-blog-deploy.yml        # Rolling restart via SSM (merge to main / manual)
+        └── shehujp-blog-dns.yml           # Update Route 53 A records (manual only)
 ```
 
 ---
@@ -221,7 +221,7 @@ PR opened / updated
   │           ├── Rebuild for Trivy
   │           └── Trivy CRITICAL/HIGH scan (.trivyignore applied)
   │
-  └── atechbroe-infra.yml  (only when terraform/** or workflow file changes)
+  └── shehujp-blog-infra.yml  (only when terraform/** or workflow file changes)
         ├── terraform fmt -check
         ├── terraform init
         ├── terraform validate
@@ -242,7 +242,7 @@ Merge to main
   │           └── Build & push multi-arch (amd64 + arm64)
   │                 Tags: :main  :sha-<commit>  :latest
   │
-  └── atechbroe-deploy.yml  (triggers when ghost-CI completes)
+  └── shehujp-blog-deploy.yml  (triggers when ghost-CI completes)
         ├── Discover EC2 by Environment=production tag
         ├── SSM send-command: systemctl restart ghost
         │     └── ExecStartPre pulls latest Docker Hub image
@@ -254,16 +254,16 @@ Merge to main
 
 ```text
 Actions → Terraform — Plan / Apply → Run workflow
-  └── atechbroe-infra.yml
+  └── shehujp-blog-infra.yml
         input: action = plan   →  plan only
         input: action = apply  →  plan + apply  (production gate)
 
 Actions → Deploy — Rolling Restart → Run workflow
-  └── atechbroe-deploy.yml
+  └── shehujp-blog-deploy.yml
         input: force = true  →  restart regardless of new image
 
 Actions → DNS — Update shehujp.com → Run workflow
-  └── atechbroe-dns.yml
+  └── shehujp-blog-dns.yml
         inputs: server_ip / ttl / dry_run
 ```
 
@@ -272,9 +272,9 @@ Actions → DNS — Update shehujp.com → Run workflow
 | Workflow | Auto trigger | Manual inputs |
 | --- | --- | --- |
 | `ghost-CI.yml` | Push/PR to `dev`/`main`; semver tags | `publish` (bool), `skip_tests` (bool) |
-| `atechbroe-infra.yml` | PR to `dev`/`main` (terraform/** changes) | `action`: `plan` / `apply` |
-| `atechbroe-deploy.yml` | After `ghost-CI` succeeds on `main` | `force` (bool) |
-| `atechbroe-dns.yml` | Manual only | `server_ip`, `ttl`, `dry_run` |
+| `shehujp-blog-infra.yml` | PR to `dev`/`main` (terraform/** changes) | `action`: `plan` / `apply` |
+| `shehujp-blog-deploy.yml` | After `ghost-CI` succeeds on `main` | `force` (bool) |
+| `shehujp-blog-dns.yml` | Manual only | `server_ip`, `ttl`, `dry_run` |
 
 ### Docker image tags
 
@@ -303,7 +303,7 @@ TLS is handled entirely by the **ALB + AWS Certificate Manager**. No manual cert
 
 Route 53 ALIAS records point automatically to the ALB — they update when the ALB scales or changes IPs with no manual intervention needed.
 
-Run the `atechbroe-dns.yml` workflow manually from **Actions → DNS — Update shehujp.com → Run workflow** if you ever need to force-update the ALIAS target (e.g. after switching to a new ALB).
+Run the `shehujp-blog-dns.yml` workflow manually from **Actions → DNS — Update shehujp.com → Run workflow** if you ever need to force-update the ALIAS target (e.g. after switching to a new ALB).
 
 | Input | Description |
 | --- | --- |
@@ -320,19 +320,19 @@ The workflow validates the IP, upserts both `shehujp.com` and `www.shehujp.com` 
 ### Create an IAM user for CI
 
 ```sh
-aws iam create-user --user-name github-actions-atechbroe
+aws iam create-user --user-name github-actions-shehujp
 
 # Attach permissions needed by Terraform + deploy + DNS workflows
 aws iam attach-user-policy \
-  --user-name github-actions-atechbroe \
+  --user-name github-actions-shehujp \
   --policy-arn arn:aws:iam::aws:policy/PowerUserAccess
 
 aws iam attach-user-policy \
-  --user-name github-actions-atechbroe \
+  --user-name github-actions-shehujp \
   --policy-arn arn:aws:iam::aws:policy/AmazonSSMFullAccess
 
 # Generate access keys
-aws iam create-access-key --user-name github-actions-atechbroe
+aws iam create-access-key --user-name github-actions-shehujp
 # → save AccessKeyId and SecretAccessKey — shown once only
 ```
 
