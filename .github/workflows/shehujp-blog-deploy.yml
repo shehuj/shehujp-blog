@@ -81,15 +81,35 @@ jobs:
       - name: Discover EC2 instance
         id: instance
         run: |
+          # Primary: search by Environment default_tag (set by Terraform providers.tf)
           INSTANCE_ID=$(aws ec2 describe-instances \
             --filters \
               "Name=tag:Environment,Values=production" \
               "Name=instance-state-name,Values=running" \
-            --query "Reservations[0].Instances[0].InstanceId" \
-            --output text)
+            --query "Reservations[].Instances[].InstanceId | [0]" \
+            --output text 2>/dev/null || true)
+
+          # Fallback: search by Name tag (always set directly on the resource)
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "Environment tag search returned nothing — trying Name tag fallback..."
+            INSTANCE_ID=$(aws ec2 describe-instances \
+              --filters \
+                "Name=tag:Name,Values=ghost-blog-production" \
+                "Name=instance-state-name,Values=running" \
+              --query "Reservations[].Instances[].InstanceId | [0]" \
+              --output text 2>/dev/null || true)
+          fi
 
           if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
-            echo "ERROR: No running production EC2 instance found." >&2
+            echo "::error::No running production EC2 instance found."
+            echo ""
+            echo "--- All ghost-blog instances (any state) ---"
+            aws ec2 describe-instances \
+              --filters "Name=tag:Name,Values=ghost-blog-*" \
+              --query "Reservations[].Instances[].[InstanceId,State.Name,Tags[?Key=='Name']|[0].Value]" \
+              --output table || true
+            echo ""
+            echo "Run the Terraform infra workflow (action=apply) to provision the instance first."
             exit 1
           fi
 
