@@ -1,17 +1,29 @@
-name: Terraform — Plan (PR) / Apply (PR to main) / Apply (manual)
+name: Terraform — Plan / Apply
+
+# ── Pipeline position ─────────────────────────────────────────────────────────
+#   PR opened/updated  →  plan + apply dev  + validate dev
+#   Merge to main      →  plan + apply prod + validate prod
+#   Manual dispatch    →  choose environment and action
 
 on:
-  # Every PR gets a plan posted as a comment.
-  # PRs targeting main also get an apply + infrastructure validation so infra
-  # is fully provisioned before the PR is merged and deploy fires.
   pull_request:
     branches: ["main", "dev"]
     paths:
       - "terraform/**"
       - ".github/workflows/shehujp-blog-infra.yml"
-  # Manual dispatch — kept for emergency re-applies and targeted plans.
+  push:
+    branches: ["main"]
+    paths:
+      - "terraform/**"
+      - ".github/workflows/shehujp-blog-infra.yml"
   workflow_dispatch:
     inputs:
+      environment:
+        description: "Target environment"
+        required: false
+        default: "dev"
+        type: choice
+        options: ["dev", "production"]
       action:
         description: "Run plan only, or plan and apply"
         required: false
@@ -32,14 +44,18 @@ env:
   TF_WORKING_DIR: terraform
   TF_VAR_aws_region:  ${{ secrets.AWS_REGION }}
   TF_VAR_ghost_url:   ${{ secrets.GHOST_URL }}
-  TF_VAR_ghost_image: ${{ secrets.DOCKERHUB_USERNAME }}/shehujp-blog:latest
-  TF_VAR_environment: production
+  # Environment and image tag are derived from the triggering event:
+  #   pull_request → dev  + :dev image
+  #   push to main → production + :latest image
+  #   workflow_dispatch → chosen via input
+  TF_VAR_environment: ${{ github.event_name == 'pull_request' && 'dev' || github.event_name == 'push' && 'production' || inputs.environment }}
+  TF_VAR_ghost_image: ${{ format('{0}/shehujp-blog:{1}', secrets.DOCKERHUB_USERNAME, github.event_name == 'pull_request' && 'dev' || 'latest') }}
 
 jobs:
 
-# ── 1. Validate & Plan ────────────────────────────────────────────────────────
+# ── 1. Plan ───────────────────────────────────────────────────────────────────
   plan:
-    name: Terraform Plan
+    name: Terraform Plan (${{ github.event_name == 'pull_request' && 'dev' || github.event_name == 'push' && 'production' || inputs.environment }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -93,7 +109,7 @@ jobs:
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tfplan
+          name: tfplan-${{ env.TF_VAR_environment }}
           path: ${{ env.TF_WORKING_DIR }}/tfplan
           retention-days: 1
 
@@ -109,12 +125,10 @@ jobs:
               ? plan.slice(0, maxLen) + '\n\n... (truncated)'
               : plan;
             const fmtStatus = '${{ steps.fmt.outcome }}' === 'success' ? '✅' : '⚠️';
-            const willApply = '${{ github.base_ref }}' === 'main';
-            const applyNote = willApply
-              ? '\n\n> ⚡ **This PR targets `main` — changes will be applied automatically after plan succeeds.**'
-              : '\n\n> ℹ️ This PR targets `dev` — plan only, no apply.';
-            const body = `## Terraform Plan
-            **Format**: ${fmtStatus}${applyNote}
+            const body = `## Terraform Plan — \`dev\`
+            **Format**: ${fmtStatus}
+
+            > ⚡ Changes will be applied to the **dev** environment automatically after this plan succeeds.
 
             <details><summary>Show Plan</summary>
 
@@ -134,28 +148,22 @@ jobs:
         run: exit 1
 
 # ── 2. Apply ──────────────────────────────────────────────────────────────────
-#    Runs automatically on PRs to main when the plan shows changes (exit_code=2).
-#    Also runs on manual dispatch with action=apply.
-#    Gated behind the production environment for human approval.
+#    PR       → apply dev  (auto when plan has changes, dev environment gate)
+#    Push main → apply prod (auto when plan has changes, production gate)
+#    Manual   → apply chosen environment
   apply:
-    name: Terraform Apply
+    name: Terraform Apply (${{ github.event_name == 'pull_request' && 'dev' || github.event_name == 'push' && 'production' || inputs.environment }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: plan
     if: |
-      (
-        github.event_name == 'pull_request' &&
-        github.base_ref == 'main' &&
-        needs.plan.outputs.plan_exit_code == '2'
-      ) ||
-      (
-        github.event_name == 'workflow_dispatch' &&
-        inputs.action == 'apply'
-      )
+      (github.event_name == 'pull_request' && needs.plan.outputs.plan_exit_code == '2') ||
+      (github.event_name == 'push' && needs.plan.outputs.plan_exit_code == '2') ||
+      (github.event_name == 'workflow_dispatch' && inputs.action == 'apply')
 
     environment:
-      name: production
-      url: https://www.shehujp.com
+      name: ${{ github.event_name == 'pull_request' && 'dev' || 'production' }}
+      url: ${{ github.event_name == 'pull_request' && '' || 'https://www.shehujp.com' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -183,7 +191,7 @@ jobs:
       - name: Download plan artifact
         uses: actions/download-artifact@v4
         with:
-          name: tfplan
+          name: tfplan-${{ env.TF_VAR_environment }}
           path: ${{ env.TF_WORKING_DIR }}
 
       - name: Terraform Apply
@@ -194,13 +202,13 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform output -no-color
 
-# ── 3. Validate — verify provisioned resources are healthy ────────────────────
-#    Runs after every successful apply. Checks:
+# ── 3. Validate ───────────────────────────────────────────────────────────────
+#    Runs after every successful apply. Verifies:
 #      a) EC2 instance reached running state
 #      b) SSM agent registered and online
 #      c) Ghost stack responds HTTP 200 internally
   validate:
-    name: Validate Infrastructure
+    name: Validate Infrastructure (${{ github.event_name == 'pull_request' && 'dev' || github.event_name == 'push' && 'production' || inputs.environment }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: apply
@@ -214,15 +222,17 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      # ── a) Wait for EC2 to reach running state ────────────────────────────────
+      # ── a) Wait for EC2 running ───────────────────────────────────────────────
       - name: Wait for EC2 instance running
         id: instance
         run: |
-          echo "Waiting for EC2 instance to reach running state..."
+          ENV="${{ env.TF_VAR_environment }}"
+          echo "Waiting for ghost-blog-${ENV} instance to reach running state..."
+
           for i in $(seq 1 24); do
             INSTANCE_ID=$(aws ec2 describe-instances \
               --filters \
-                "Name=tag:Environment,Values=production" \
+                "Name=tag:Environment,Values=${ENV}" \
                 "Name=instance-state-name,Values=running" \
               --query "Reservations[].Instances[].InstanceId | [0]" \
               --output text 2>/dev/null || true)
@@ -230,7 +240,7 @@ jobs:
             if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
               INSTANCE_ID=$(aws ec2 describe-instances \
                 --filters \
-                  "Name=tag:Name,Values=ghost-blog-production" \
+                  "Name=tag:Name,Values=ghost-blog-${ENV}" \
                   "Name=instance-state-name,Values=running" \
                 --query "Reservations[].Instances[].InstanceId | [0]" \
                 --output text 2>/dev/null || true)
@@ -242,15 +252,12 @@ jobs:
               break
             fi
 
-            echo "[$i/24] Waiting for instance to be running..."
-            if [ "$i" -eq 24 ]; then
-              echo "::error::EC2 instance did not reach running state within 4 minutes."
-              exit 1
-            fi
+            echo "[$i/24] Waiting..."
+            [ "$i" -eq 24 ] && { echo "::error::Instance did not reach running state within 4 minutes."; exit 1; }
             sleep 10
           done
 
-      # ── b) Wait for SSM agent to register ────────────────────────────────────
+      # ── b) Wait for SSM agent ─────────────────────────────────────────────────
       - name: Wait for SSM agent online
         run: |
           echo "Waiting for SSM agent on ${{ steps.instance.outputs.instance_id }}..."
@@ -260,27 +267,16 @@ jobs:
               --query "InstanceInformationList[0].PingStatus" \
               --output text 2>/dev/null || true)
 
-            if [ "$STATUS" = "Online" ]; then
-              echo "SSM agent is online."
-              break
-            fi
+            [ "$STATUS" = "Online" ] && { echo "SSM agent is online."; break; }
 
             echo "[$i/24] SSM status: ${STATUS:-not yet registered}"
-            if [ "$i" -eq 24 ]; then
-              echo "::error::SSM agent did not come online within 4 minutes."
-              exit 1
-            fi
+            [ "$i" -eq 24 ] && { echo "::error::SSM agent did not come online within 4 minutes."; exit 1; }
             sleep 10
           done
 
       # ── c) Verify Ghost stack via SSM ─────────────────────────────────────────
-      #    Runs on the instance: checks docker compose ps and internal HTTP.
-      #    Ghost may still be initialising (userdata runs at boot) so we allow
-      #    up to 5 minutes for the stack to become healthy.
       - name: Verify Ghost stack health via SSM
         run: |
-          # Base64-encode the validation script to avoid all JSON/quoting issues
-          # (same approach as the deploy workflow).
           cat > /tmp/validate.sh << 'SCRIPT'
           set -euo pipefail
 
@@ -291,10 +287,7 @@ jobs:
           for i in $(seq 1 30); do
             CODE=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 http://localhost:2368/ 2>/dev/null || echo "000")
             echo "[$i/30] HTTP $CODE"
-            if [ "$CODE" = "200" ]; then
-              echo "Ghost is healthy."
-              exit 0
-            fi
+            if [ "$CODE" = "200" ]; then echo "Ghost is healthy."; exit 0; fi
             sleep 10
           done
           echo "ERROR: Ghost did not respond HTTP 200 within 5 minutes." >&2
@@ -342,9 +335,10 @@ jobs:
         if: always()
         run: |
           STATUS="${{ job.status }}"
+          ENV="${{ env.TF_VAR_environment }}"
           ICON=$([ "$STATUS" = "success" ] && echo "✅" || echo "❌")
           {
-            echo "## Infrastructure Validation — ${ICON} ${STATUS}"
+            echo "## Infrastructure Validation — ${ENV} — ${ICON} ${STATUS}"
             echo ""
             echo "| Check | Result |"
             echo "| --- | --- |"
@@ -352,5 +346,5 @@ jobs:
             echo "| SSM agent online | ${ICON} |"
             echo "| Ghost HTTP 200 (internal) | ${ICON} |"
             echo ""
-            echo "**Triggered by:** @${{ github.actor }}"
+            echo "**Environment:** \`${ENV}\`  **Triggered by:** @${{ github.actor }}"
           } >> "$GITHUB_STEP_SUMMARY"

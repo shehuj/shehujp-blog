@@ -1,42 +1,42 @@
-name: Deploy — Rolling Restart Ghost on EC2
+name: Deploy — Ghost on EC2
 
-# Pipeline position: fires AFTER merge to main.
+# ── Pipeline position ─────────────────────────────────────────────────────────
+#   PR opened/updated  →  ghost-build publishes :dev
+#                      →  THIS WORKFLOW deploys :dev  to dev  EC2
+#   Merge to main      →  ghost-build publishes :latest
+#                      →  THIS WORKFLOW deploys :latest to prod EC2
 #
-#   PR opened  →  ghost-CI (build + test + scan)
-#              →  shehujp-blog-infra (plan + apply + validate)
-#   PR merged  →  ghost-CI (build + test + scan + publish to Docker Hub)
-#              →  THIS WORKFLOW (rolling restart on EC2 via SSM)
-#
-# Can also be triggered manually (e.g. after a hotfix, config change, or rollback).
+# Environment routing is automatic:
+#   CI ran on a PR branch → target = dev,        image = :dev
+#   CI ran on main        → target = production,  image = :latest
 #
 # Pre-requisites (GitHub Secrets):
-#   AWS_ACCESS_KEY_ID     — IAM user with ssm:SendCommand + ec2:DescribeInstances
-#   AWS_SECRET_ACCESS_KEY — corresponding secret key
-#   AWS_REGION            — e.g. us-east-1
-#   GHOST_URL             — e.g. https://www.shehujp.com (used for health check)
-#   DOCKERHUB_USERNAME    — used to resolve the full image name
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION
+#   GHOST_URL          — production public URL (used for prod external health check)
+#   DOCKERHUB_USERNAME — Docker Hub username
 
 on:
   workflow_run:
     workflows: ["Docker Build, Test & Publish"]
     types: [completed]
-    branches: ["main"]
+    # No branches filter — we handle dev vs prod routing inside the workflow.
   workflow_dispatch:
     inputs:
-      force:
-        description: "Force restart even if no new image was published"
-        required: false
-        default: false
-        type: boolean
+      environment:
+        description: "Target environment"
+        required: true
+        default: "dev"
+        type: choice
+        options: ["dev", "production"]
       rollback_tag:
-        description: "Image tag to deploy (leave blank for :latest). e.g. sha-abc1234 or 6.14.0"
+        description: "Image tag to deploy (blank = environment default: :dev or :latest)"
         required: false
         default: ""
         type: string
 
-# Never run two deploys at the same time
+# Separate concurrency groups per environment so dev and prod never block each other.
 concurrency:
-  group: deploy-ghost
+  group: deploy-ghost-${{ github.event.workflow_run.head_branch || inputs.environment }}
   cancel-in-progress: false
 
 permissions:
@@ -44,23 +44,68 @@ permissions:
 
 jobs:
 
-  deploy:
-    name: Rolling Restart
+# ── 1. Resolve — determine environment, image, and target instance ─────────────
+  resolve:
+    name: Resolve Target
     runs-on: ubuntu-latest
-    timeout-minutes: 15
 
-    # Skip if triggered by a failed CI run (unless forced manually)
+    # Skip deploys triggered by failed CI runs.
     if: >
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
 
+    outputs:
+      environment: ${{ steps.target.outputs.environment }}
+      image:       ${{ steps.target.outputs.image }}
+      tag:         ${{ steps.target.outputs.tag }}
+
+    steps:
+      - name: Determine environment and image tag
+        id: target
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENV="${{ inputs.environment }}"
+          elif [ "${{ github.event.workflow_run.head_branch }}" = "main" ]; then
+            ENV="production"
+          else
+            ENV="dev"
+          fi
+
+          # Explicit rollback tag overrides the environment default.
+          if [ -n "${{ inputs.rollback_tag }}" ]; then
+            TAG="${{ inputs.rollback_tag }}"
+          elif [ "$ENV" = "production" ]; then
+            TAG="latest"
+          else
+            TAG="dev"
+          fi
+
+          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/shehujp-blog:${TAG}"
+
+          echo "environment=$ENV" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE"     >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+
+          echo "Environment : $ENV"
+          echo "Image       : $IMAGE"
+
+# ── 2. Deploy ──────────────────────────────────────────────────────────────────
+#    Uses the GitHub environment gate:
+#      dev        → no required reviewers (fast feedback loop)
+#      production → requires manual approval
+  deploy:
+    name: Rolling Restart (${{ needs.resolve.outputs.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: resolve
+
     environment:
-      name: production
-      url: https://www.shehujp.com
+      name: ${{ needs.resolve.outputs.environment }}
+      url: ${{ needs.resolve.outputs.environment == 'production' && 'https://www.shehujp.com' || '' }}
 
     steps:
 
-      # ── 1. AWS auth ───────────────────────────────────────────────────────────
+      # ── Auth ─────────────────────────────────────────────────────────────────
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -68,46 +113,31 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      # ── 2. Resolve image tag ──────────────────────────────────────────────────
-      #    Default: :latest (set by publish job on main)
-      #    Rollback: any tag passed via workflow_dispatch input
-      - name: Resolve target image tag
-        id: image
-        run: |
-          TAG="${{ inputs.rollback_tag }}"
-          if [ -z "$TAG" ]; then
-            TAG="latest"
-          fi
-          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/shehujp-blog:${TAG}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "Target image: $IMAGE"
-
-      # ── 3. Find the running EC2 instance by tag ──────────────────────────────
+      # ── Discover EC2 instance ─────────────────────────────────────────────────
       - name: Discover EC2 instance
         id: instance
         run: |
-          # Primary: search by Environment default_tag (set by Terraform providers.tf)
+          ENV="${{ needs.resolve.outputs.environment }}"
+
           INSTANCE_ID=$(aws ec2 describe-instances \
             --filters \
-              "Name=tag:Environment,Values=production" \
+              "Name=tag:Environment,Values=${ENV}" \
               "Name=instance-state-name,Values=running" \
             --query "Reservations[].Instances[].InstanceId | [0]" \
             --output text 2>/dev/null || true)
 
-          # Fallback: search by Name tag (always set directly on the resource)
           if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
             echo "Environment tag search returned nothing — trying Name tag fallback..."
             INSTANCE_ID=$(aws ec2 describe-instances \
               --filters \
-                "Name=tag:Name,Values=ghost-blog-production" \
+                "Name=tag:Name,Values=ghost-blog-${ENV}" \
                 "Name=instance-state-name,Values=running" \
               --query "Reservations[].Instances[].InstanceId | [0]" \
               --output text 2>/dev/null || true)
           fi
 
           if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
-            echo "::error::No running production EC2 instance found."
+            echo "::error::No running ${ENV} EC2 instance found."
             echo ""
             echo "--- All ghost-blog instances (any state) ---"
             aws ec2 describe-instances \
@@ -115,28 +145,19 @@ jobs:
               --query "Reservations[].Instances[].[InstanceId,State.Name,Tags[?Key=='Name']|[0].Value]" \
               --output table || true
             echo ""
-            echo "Run the Terraform infra workflow (action=apply) to provision the instance first."
+            echo "Run the Terraform infra workflow to provision the ${ENV} instance first."
             exit 1
           fi
 
           echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
           echo "Found instance: $INSTANCE_ID"
 
-      # ── 4. Deploy via SSM — mirrors CI test approach on production stack ──────
-      #    On-instance steps (running as root via SSM):
-      #      a) Update the image tag in the Ghost .env file
-      #      b) Pull the new image explicitly (fails fast if tag missing)
-      #      c) Rolling restart: bring up ghost only, no-deps, remove orphans
-      #      d) HEALTHCHECK loop — mirrors CI "Wait for healthy status"
-      #      e) Assert running user is node — mirrors CI "Verify container user"
-      #      f) HTTP 200 on localhost:2368 — mirrors CI "Verify HTTP 200"
-      #         (internal check; external check via GHOST_URL happens in step 6)
+      # ── Build and encode the deploy script ───────────────────────────────────
       - name: Build SSM deployment script
         id: script
         env:
-          TARGET_IMAGE: ${{ steps.image.outputs.image }}
+          TARGET_IMAGE: ${{ needs.resolve.outputs.image }}
         run: |
-          # Write the remote script to a file to avoid quoting hell
           cat > /tmp/deploy.sh << 'SCRIPT'
           set -euo pipefail
 
@@ -146,7 +167,7 @@ jobs:
 
           echo "=== Deployment target: $IMAGE ==="
 
-          # ── a) Update GHOST_IMAGE in .env ────────────────────────────────────
+          # a) Update GHOST_IMAGE in .env
           if [ -f "$ENV_FILE" ]; then
             if grep -q "^GHOST_IMAGE=" "$ENV_FILE"; then
               sed -i "s|^GHOST_IMAGE=.*|GHOST_IMAGE=$IMAGE|" "$ENV_FILE"
@@ -158,61 +179,47 @@ jobs:
             echo "WARNING: $ENV_FILE not found — systemd unit may hardcode the image." >&2
           fi
 
-          # ── b) Pull image ─────────────────────────────────────────────────────
+          # b) Pull image (fail fast if tag is missing on Docker Hub)
           echo "=== Pulling image ==="
           docker compose -f "$COMPOSE_FILE" pull ghost
 
-          # ── c) Rolling restart (ghost only, keep MySQL/Nginx running) ─────────
+          # c) Rolling restart — ghost only, keep MySQL/Nginx running
           echo "=== Starting rolling restart ==="
           docker compose -f "$COMPOSE_FILE" up -d \
             --no-deps \
             --remove-orphans \
             ghost
 
-          # ── d) HEALTHCHECK loop (mirrors CI "Wait for healthy status") ────────
+          # d) HEALTHCHECK loop
           echo "=== Waiting for Ghost HEALTHCHECK ==="
           for i in $(seq 1 30); do
             STATUS=$(docker inspect --format='{{.State.Health.Status}}' ghost 2>/dev/null || echo "starting")
             echo "[$i/30] $STATUS"
-            if [ "$STATUS" = "healthy" ]; then
-              echo "Ghost container is healthy."
-              break
-            fi
+            if [ "$STATUS" = "healthy" ]; then echo "Ghost container is healthy."; break; fi
             if [ "$i" -eq 30 ]; then
-              echo "ERROR: Ghost failed health check after 150 s" >&2
+              echo "ERROR: Ghost failed health check after 150s" >&2
               docker logs --tail 50 ghost >&2
               exit 1
             fi
             sleep 5
           done
 
-          # ── e) Assert running user is node (mirrors CI "Verify container user") ─
+          # e) Assert running user is node
           echo "=== Verifying container user ==="
           RUN_USER=$(docker exec ghost whoami 2>/dev/null || echo "unknown")
           echo "Container is running as: $RUN_USER"
-          if [ "$RUN_USER" != "node" ]; then
-            echo "ERROR: expected user 'node', got '$RUN_USER'" >&2
-            exit 1
-          fi
+          [ "$RUN_USER" = "node" ] || { echo "ERROR: expected 'node', got '$RUN_USER'" >&2; exit 1; }
 
-          # ── f) HTTP 200 on Ghost direct port (mirrors CI "Verify HTTP 200") ───
+          # f) Internal HTTP 200 check
           echo "=== Internal HTTP check on :2368 ==="
           for i in $(seq 1 6); do
-            CODE=$(curl -sf -o /dev/null -w "%{http_code}" \
-              --max-time 10 http://localhost:2368/ 2>/dev/null || echo "000")
+            CODE=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 10 http://localhost:2368/ 2>/dev/null || echo "000")
             echo "[$i/6] HTTP $CODE"
-            if [ "$CODE" = "200" ]; then
-              echo "Ghost responding HTTP 200 on :2368."
-              break
-            fi
-            if [ "$i" -eq 6 ]; then
-              echo "ERROR: Ghost did not respond HTTP 200 on :2368" >&2
-              exit 1
-            fi
+            if [ "$CODE" = "200" ]; then echo "Ghost responding HTTP 200 on :2368."; break; fi
+            if [ "$i" -eq 6 ]; then echo "ERROR: Ghost did not respond HTTP 200 on :2368" >&2; exit 1; fi
             sleep 5
           done
 
-          # ── Status summary ────────────────────────────────────────────────────
           echo ""
           echo "=== Stack status ==="
           docker compose -f "$COMPOSE_FILE" ps
@@ -221,22 +228,19 @@ jobs:
           docker inspect ghost --format='Image: {{.Config.Image}}  Digest: {{.Image}}'
           SCRIPT
 
-          # Substitute the image placeholder (avoids heredoc escaping conflicts)
           sed -i "s|__TARGET_IMAGE__|${TARGET_IMAGE}|g" /tmp/deploy.sh
-
-          # Base64-encode for clean SSM transport
           ENCODED=$(base64 -w0 /tmp/deploy.sh)
           echo "encoded=$ENCODED" >> "$GITHUB_OUTPUT"
 
+      # ── Send via SSM ─────────────────────────────────────────────────────────
       - name: Send deployment command via SSM
         id: ssm
         run: |
-          # Decode on the remote side and execute — avoids all quoting issues
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ steps.instance.outputs.instance_id }}" \
             --document-name "AWS-RunShellScript" \
             --parameters "commands=[\"echo '${{ steps.script.outputs.encoded }}' | base64 -d | bash\"]" \
-            --comment "GitHub Actions deploy run=${{ github.run_id }} actor=${{ github.actor }} image=${{ steps.image.outputs.tag }}" \
+            --comment "deploy run=${{ github.run_id }} env=${{ needs.resolve.outputs.environment }} image=${{ needs.resolve.outputs.tag }}" \
             --timeout-seconds 600 \
             --query "Command.CommandId" \
             --output text)
@@ -244,7 +248,6 @@ jobs:
           echo "command_id=$COMMAND_ID" >> "$GITHUB_OUTPUT"
           echo "SSM command sent: $COMMAND_ID"
 
-      # ── 5. Wait for SSM command and surface output ────────────────────────────
       - name: Wait for SSM command
         run: |
           aws ssm wait command-executed \
@@ -274,10 +277,10 @@ jobs:
             --instance-id "${{ steps.instance.outputs.instance_id }}" \
             --query "StandardErrorContent" --output text || true
 
-      # ── 6. External health check — Ghost through Nginx/TLS ───────────────────
-      #    This is the production equivalent of CI's localhost:2368 curl check.
-      #    Validates the full stack: Ghost → Nginx → TLS → public DNS → HTTP 200
-      - name: Wait for Ghost to become healthy (external via GHOST_URL)
+      # ── External health check (production only) ───────────────────────────────
+      # Validates the full prod stack: Ghost → Nginx → ALB/TLS → public DNS
+      - name: External health check (prod only)
+        if: needs.resolve.outputs.environment == 'production'
         run: |
           echo "Checking ${{ secrets.GHOST_URL }} through Nginx/TLS..."
           for i in $(seq 1 24); do
@@ -290,21 +293,23 @@ jobs:
           echo "ERROR: Ghost did not respond HTTP 200 at ${{ secrets.GHOST_URL }} within 4 minutes." >&2
           exit 1
 
-      # ── 7. Job summary ────────────────────────────────────────────────────────
+      # ── Summary ───────────────────────────────────────────────────────────────
       - name: Write job summary
         if: always()
         run: |
+          ENV="${{ needs.resolve.outputs.environment }}"
+          TAG="${{ needs.resolve.outputs.tag }}"
           MODE="Rolling restart"
           [ -n "${{ inputs.rollback_tag }}" ] && MODE="Rollback to ${{ inputs.rollback_tag }}"
           {
-            echo "## Deploy — Ghost Blog"
+            echo "## Deploy — Ghost ($ENV)"
             echo ""
             echo "| Field | Value |"
             echo "| --- | --- |"
+            echo "| Environment | \`$ENV\` |"
             echo "| Mode | $MODE |"
-            echo "| Image | \`${{ steps.image.outputs.image }}\` |"
+            echo "| Image | \`${{ needs.resolve.outputs.image }}\` |"
             echo "| Instance | \`${{ steps.instance.outputs.instance_id }}\` |"
-            echo "| URL | ${{ secrets.GHOST_URL }} |"
             echo "| Triggered by | @${{ github.actor }} |"
             echo "| Run | [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
           } >> "$GITHUB_STEP_SUMMARY"

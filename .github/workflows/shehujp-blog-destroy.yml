@@ -15,7 +15,7 @@ on:
         required: false
         default: "production"
         type: choice
-        options: ["production"]
+        options: ["dev", "production"]
 
 concurrency:
   group: terraform-${{ github.ref }}
@@ -29,7 +29,7 @@ env:
   TF_WORKING_DIR: terraform
   TF_VAR_aws_region:  ${{ secrets.AWS_REGION }}
   TF_VAR_ghost_url:   ${{ secrets.GHOST_URL }}
-  TF_VAR_ghost_image: ${{ secrets.DOCKERHUB_USERNAME }}/shehujp-blog:latest
+  TF_VAR_ghost_image: ${{ format('{0}/shehujp-blog:{1}', secrets.DOCKERHUB_USERNAME, inputs.environment == 'dev' && 'dev' || 'latest') }}
   TF_VAR_environment: ${{ inputs.environment }}
 
 jobs:

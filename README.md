@@ -73,18 +73,16 @@ shehujp-blog/
 
 ## Branching Strategy
 
-| Event | What runs | What doesn't run |
+| Event | Environment | What runs |
 | --- | --- | --- |
-| Push to `dev` | Build, test, scan | Publish, infra, deploy |
-| PR to `dev` | Build, test, scan; **Terraform plan** (if `terraform/**` changed) | Publish, infra apply, deploy |
-| PR to `main` | Build, test, scan; **Terraform plan + apply + validate** (if `terraform/**` changed) | Publish, deploy |
-| Merge to `main` | Build, test, scan, **publish**, **rolling deploy** | Terraform apply |
-| `v*.*.*` tag | Build, test, scan, **publish** (semver tags) | Deploy, infra |
-| Manual dispatch | Any workflow individually, with control inputs | — |
+| PR to `main` or `dev` | **dev** | Build + test + scan + publish `:dev` → deploy to dev EC2; Terraform plan + apply dev + validate (if `terraform/**` changed) |
+| Merge to `main` | **prod** | Build + test + scan + publish `:latest` → deploy to prod EC2; Terraform plan + apply prod + validate (if `terraform/**` changed) |
+| `v*.*.*` tag | **prod** | Build + test + scan + publish semver tags |
+| Manual dispatch | chosen | Any workflow with full environment and action control |
 
-> **Infra is provisioned on PR to `main`** — the plan is posted as a comment, then applied after the production environment gate is approved. Infrastructure is ready before the merge triggers the deploy.
+> Every PR automatically provisions the dev environment and deploys a fresh `:dev` image — giving you a live preview before any code reaches production.
 
-> PRs to `dev` only plan (no apply) — safe preview of Terraform diffs without touching production.
+> Merging to `main` is the only path to production. The prod environment gate requires manual approval before the deploy fires.
 
 ---
 
@@ -206,102 +204,107 @@ terraform apply
 
 ## CI/CD Pipeline
 
-### On pull request to main
+### On pull request (dev environment)
 
 ```text
-PR opened / updated (targeting main)
+PR opened / updated (targeting main or dev)
   │
-  ├── ghost-CI.yml  (every PR, no path filter)
+  ├── ghost-build.yml  (every PR, no path filter)
   │     ├── build-and-test
   │     │     ├── Build image (GHA cache)
-  │     │     ├── Start container (SQLite)
+  │     │     ├── Start container (SQLite, no DB required)
   │     │     ├── Wait for HEALTHCHECK → healthy
   │     │     ├── Assert process user = node
   │     │     └── Assert HTTP 200 on :2368
-  │     └── security-scan  (continue-on-error)
-  │           ├── Rebuild for Trivy
-  │           └── Trivy CRITICAL/HIGH scan (.trivyignore applied)
+  │     ├── security-scan  (continue-on-error)
+  │     │     └── Trivy CRITICAL/HIGH scan
+  │     └── publish-dev
+  │           └── Build & push :dev tag to Docker Hub
   │
-  └── shehujp-blog-infra.yml  (when terraform/** or workflow file changes)
-        ├── plan
-        │     ├── terraform fmt -check
-        │     ├── terraform init / validate
-        │     ├── terraform plan  (-detailed-exitcode)
-        │     └── Post plan diff as PR comment
-        ├── apply  ← production environment gate (human approval)
-        │     └── terraform apply  (only when plan shows changes)
-        └── validate
-              ├── Wait for EC2 running state
-              ├── Wait for SSM agent online
-              └── SSM: verify Ghost HTTP 200 on :2368
+  ├── shehujp-blog-infra.yml  (when terraform/** changes)
+  │     ├── plan (dev)      → post diff as PR comment
+  │     ├── apply (dev)     ← dev environment gate
+  │     └── validate (dev)  → EC2 running, SSM online, HTTP 200
+  │
+  └── shehujp-blog-deploy.yml  (triggers after ghost-build publish-dev completes)
+        ├── resolve   → environment=dev, image=:dev
+        ├── deploy    ← dev environment gate
+        │     ├── Discover dev EC2 (tag:Environment=dev)
+        │     ├── SSM: pull + rolling restart + health checks
+        │     └── Internal HTTP 200 on :2368
+        └── (no external health check for dev)
 ```
 
-### On merge to main
+### On merge to main (production environment)
 
 ```text
 Merge to main
   │
-  ├── ghost-CI.yml
+  ├── ghost-build.yml
   │     ├── build-and-test  (same as PR)
   │     ├── security-scan   (same as PR)
-  │     └── publish
-  │           ├── Login to Docker Hub
-  │           └── Build & push multi-arch (amd64 + arm64)
-  │                 Tags: :main  :sha-<commit>  :latest
+  │     └── publish-prod
+  │           └── Build & push :main :sha-<commit> :latest to Docker Hub
   │
-  └── shehujp-blog-deploy.yml  (triggers when ghost-CI publish completes)
-        ├── Resolve image tag
-        ├── Discover EC2 by Environment=production tag
-        ├── SSM send-command: pull + rolling restart + health checks
-        ├── Wait for SSM command: Success
-        └── External health check: HTTP 200 on shehujp.com
+  ├── shehujp-blog-infra.yml  (when terraform/** changes)
+  │     ├── plan (prod)
+  │     ├── apply (prod)     ← production environment gate
+  │     └── validate (prod)
+  │
+  └── shehujp-blog-deploy.yml  (triggers after ghost-build publish-prod completes)
+        ├── resolve   → environment=production, image=:latest
+        ├── deploy    ← production environment gate
+        │     ├── Discover prod EC2 (tag:Environment=production)
+        │     ├── SSM: pull + rolling restart + health checks
+        │     ├── Internal HTTP 200 on :2368
+        │     └── External HTTP 200 on shehujp.com (full stack validation)
+        └── Job summary
 ```
 
-### On pull request to dev
-
-```text
-PR opened / updated (targeting dev)
-  │
-  ├── ghost-CI.yml  (every PR — build + test + scan, no publish)
-  │
-  └── shehujp-blog-infra.yml  (when terraform/** changes — plan only, no apply)
-        └── Post plan diff as PR comment
-```
-
-### Manual dispatch only
+### Manual dispatch
 
 ```text
 Actions → Terraform — Plan / Apply → Run workflow
   └── shehujp-blog-infra.yml
-        input: action = plan   →  plan only
-        input: action = apply  →  plan + apply + validate  (production gate)
+        inputs: environment (dev|production), action (plan|apply)
 
-Actions → Deploy — Rolling Restart → Run workflow
+Actions → Deploy — Ghost on EC2 → Run workflow
   └── shehujp-blog-deploy.yml
-        input: rollback_tag  →  deploy a specific image tag
+        inputs: environment (dev|production), rollback_tag (optional)
+
+Actions → Terraform — Destroy → Run workflow
+  └── shehujp-blog-destroy.yml
+        inputs: confirmation ("destroy"), environment (dev|production)
 
 Actions → DNS — Update shehujp.com → Run workflow
   └── shehujp-blog-dns.yml
-        inputs: server_ip / ttl / dry_run
+        inputs: server_ip, ttl, dry_run
 ```
 
 ### Workflow reference
 
-| Workflow | Auto trigger | Manual inputs |
-| --- | --- | --- |
-| `ghost-CI.yml` | Every PR to `dev`/`main`; push/tags on `main` | `publish` (bool), `skip_tests` (bool) |
-| `shehujp-blog-infra.yml` | PR to `main` (plan + apply + validate); PR to `dev` (plan only) | `action`: `plan` / `apply` |
-| `shehujp-blog-deploy.yml` | After `ghost-CI` publish succeeds on `main` | `rollback_tag` (string) |
-| `shehujp-blog-dns.yml` | Manual only | `server_ip`, `ttl`, `dry_run` |
+| Workflow | File | Auto trigger | Environment routed |
+| --- | --- | --- | --- |
+| Docker Build, Test & Publish | `ghost-build.yml` | Every PR; push/tags to `main` | PR → dev image (`:dev`); merge → prod images (`:latest`, `:sha-xxx`) |
+| Terraform — Plan / Apply | `shehujp-blog-infra.yml` | PR (terraform changes) → dev; push to `main` (terraform changes) → prod | Dynamic per event |
+| Deploy — Ghost on EC2 | `shehujp-blog-deploy.yml` | After CI publish completes | PR branch → dev; `main` → prod |
+| DNS — Update shehujp.com | `shehujp-blog-dns.yml` | Manual only | n/a |
+| Terraform — Destroy | `shehujp-blog-destroy.yml` | Manual only | Chosen via input |
 
 ### Docker image tags
 
-| Event | Tags produced |
-| --- | --- |
-| Merge / push to `main` | `:main`, `:sha-<commit>`, `:latest` |
-| Push tag `v1.2.3` | `:1.2.3`, `:1.2`, `:sha-<commit>` |
-| Push to `dev` / PR | Build + test + scan only — no publish |
-| Manual dispatch with `publish=true` | Same tags as branch push |
+| Event | Tags produced | Deployed to |
+| --- | --- | --- |
+| PR to `main` or `dev` | `:dev` | dev EC2 |
+| Merge / push to `main` | `:main`, `:sha-<commit>`, `:latest` | prod EC2 |
+| Push tag `v1.2.3` | `:1.2.3`, `:1.2`, `:sha-<commit>` | (manual deploy) |
+
+### Required GitHub environments
+
+| Environment | Approval required | Used by |
+| --- | --- | --- |
+| `dev` | No | Dev infra apply, dev deploy |
+| `production` | Yes | Prod infra apply, prod deploy, destroy |
 
 ---
 
