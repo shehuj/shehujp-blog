@@ -279,16 +279,34 @@ jobs:
       #    up to 5 minutes for the stack to become healthy.
       - name: Verify Ghost stack health via SSM
         run: |
+          # Base64-encode the validation script to avoid all JSON/quoting issues
+          # (same approach as the deploy workflow).
+          cat > /tmp/validate.sh << 'SCRIPT'
+          set -euo pipefail
+
+          echo "=== Docker stack status ==="
+          docker compose -f /opt/ghost/docker-compose.yml ps 2>/dev/null || echo "(stack not yet started)"
+
+          echo "=== Waiting for Ghost HTTP 200 (up to 5 minutes) ==="
+          for i in $(seq 1 30); do
+            CODE=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 http://localhost:2368/ 2>/dev/null || echo "000")
+            echo "[$i/30] HTTP $CODE"
+            if [ "$CODE" = "200" ]; then
+              echo "Ghost is healthy."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "ERROR: Ghost did not respond HTTP 200 within 5 minutes." >&2
+          exit 1
+          SCRIPT
+
+          ENCODED=$(base64 -w0 /tmp/validate.sh)
+
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ steps.instance.outputs.instance_id }}" \
             --document-name "AWS-RunShellScript" \
-            --parameters 'commands=[
-              "set -euo pipefail",
-              "echo === Docker stack status ===",
-              "docker compose -f /opt/ghost/docker-compose.yml ps 2>/dev/null || echo (stack not yet started)",
-              "echo === Waiting for Ghost HTTP 200 ===",
-              "for i in $(seq 1 30); do CODE=$(curl -sf -o /dev/null -w \"%{http_code}\" --max-time 5 http://localhost:2368/ 2>/dev/null || echo 000); echo \"[$i/30] HTTP $CODE\"; [ \"$CODE\" = \"200\" ] && { echo Ghost is healthy.; exit 0; }; sleep 10; done; echo ERROR: Ghost did not respond within 5 minutes. >&2; exit 1"
-            ]' \
+            --parameters "commands=[\"echo '$ENCODED' | base64 -d | bash\"]" \
             --comment "infra-validate run=${{ github.run_id }}" \
             --timeout-seconds 360 \
             --query "Command.CommandId" \
